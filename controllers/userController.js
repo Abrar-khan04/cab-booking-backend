@@ -3,30 +3,59 @@ import supabase from '../config/supabase.js'
 // POST /api/users/sync — Sync user from Clerk to Supabase
 export const syncUser = async (req, res) => {
   try {
-    const { clerk_id, email, name, phone, role, profile_pic } = req.body
+    // Never accept a Clerk ID from the browser. The ID in a verified session is
+    // the only account this request is allowed to create or update.
+    const clerk_id = req.auth.userId
+    const { email, name, phone, profile_pic } = req.body
 
-    if (!clerk_id || !email) {
-      return res.status(400).json({ error: 'clerk_id and email are required' })
+    if (!email) {
+      return res.status(400).json({ error: 'An email address is required to sync your profile' })
     }
 
-    // Check if user already exists
-    const { data: existingUser } = await supabase
+    // First look up the account using the signed-in Clerk identity.
+    const { data: existingUser, error: clerkLookupError } = await supabase
       .from('users')
       .select('*')
       .eq('clerk_id', clerk_id)
-      .single()
+      .maybeSingle()
+
+    if (clerkLookupError) throw clerkLookupError
 
     if (existingUser) {
-      // Update existing user
+      // Do not write `updated_at` explicitly: some earlier installations of
+      // this project were created before that optional column existed.
       const { data, error } = await supabase
         .from('users')
-        .update({ email, name, phone, profile_pic, updated_at: new Date().toISOString() })
+        .update({ email, name, phone, profile_pic })
         .eq('clerk_id', clerk_id)
         .select()
         .single()
 
       if (error) throw error
       return res.json({ message: 'User updated', user: data })
+    }
+
+    // A user can already exist from an earlier Clerk instance/deployment. In
+    // that case, reconnect the same email to the current Clerk account rather
+    // than failing on the unique email constraint.
+    const { data: emailMatch, error: emailLookupError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .maybeSingle()
+
+    if (emailLookupError) throw emailLookupError
+
+    if (emailMatch) {
+      const { data, error } = await supabase
+        .from('users')
+        .update({ clerk_id, name: name || emailMatch.name, phone, profile_pic })
+        .eq('id', emailMatch.id)
+        .select()
+        .single()
+
+      if (error) throw error
+      return res.json({ message: 'User reconnected', user: data })
     }
 
     // Create new user
@@ -37,7 +66,7 @@ export const syncUser = async (req, res) => {
         email,
         name: name || email.split('@')[0],
         phone,
-        role: role || 'rider',
+        role: 'rider',
         profile_pic,
       })
       .select()

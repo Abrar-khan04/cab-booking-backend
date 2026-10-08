@@ -10,8 +10,8 @@ import {
 
 const router = express.Router()
 
-// Public
-router.post('/sync', syncUser)                     // Sync user from Clerk
+// The authenticated Clerk user can only sync their own profile.
+router.post('/sync', requireAuth, syncUser)         // Sync user from Clerk
 router.get('/drivers', getAvailableDrivers)         // List available drivers
 
 // Protected (require auth)
